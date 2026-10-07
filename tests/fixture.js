@@ -1,0 +1,228 @@
+function cell(html) {
+  const wrapper = document.createElement("div");
+  wrapper.dataset.testid = "cellInnerDiv";
+  wrapper.innerHTML = html;
+  return wrapper;
+}
+
+function tweet({ id, name, handle, text, extra = "", liked = false, dialog = false }) {
+  const like = liked ? "unlike" : "like";
+  const replyAttr = dialog ? " data-opens-dialog" : "";
+  return cell(`
+    <article data-testid="tweet" id="${id}">
+      <div data-testid="User-Name">
+        <a href="/${handle}"><span>${name}</span></a>
+        <a href="/${handle}"><span>@${handle}</span></a>
+      </div>
+      ${text ? `<div data-testid="tweetText">${text}</div>` : ""}
+      ${extra}
+      <div role="group">
+        <button data-testid="reply"${replyAttr}></button>
+        <button data-testid="${like}"></button>
+      </div>
+    </article>
+  `);
+}
+
+const timeline = document.querySelector("#timeline");
+timeline.append(
+  tweet({
+    id: "tweet-a",
+    name: "Ada",
+    handle: "ada",
+    text: "今天的构建终于绿了。",
+    extra: '<div data-testid="tweetPhoto"></div>',
+    dialog: true,
+  }),
+  tweet({ id: "tweet-empty", name: "空", handle: "empty", text: "" }),
+  tweet({
+    id: "tweet-quote",
+    name: "Bea",
+    handle: "bea",
+    text: "同意，补一句。",
+    extra: `
+      <div role="link"><div data-testid="tweetText">原文在这里。</div></div>
+      <a href="https://example.com/post">链接</a>
+      <article data-testid="tweet" id="nested">
+        <div data-testid="tweetText">嵌套正文</div>
+        <div role="group"><button data-testid="reply"></button><button data-testid="like"></button></div>
+      </article>
+    `,
+    liked: true,
+  }),
+  tweet({
+    id: "tweet-inline",
+    name: "Cara",
+    handle: "cara",
+    text: "这段已经打开回复框。",
+    extra: '<div data-testid="tweetTextarea_0" id="inline-box" contenteditable="true">草稿</div>',
+  }),
+  tweet({ id: "tweet-silent", name: "Dio", handle: "dio", text: "回复框不会出现。" }),
+);
+
+document.querySelectorAll('[data-testid="reply"]').forEach((button) => {
+  button.addEventListener("click", () => {
+    button.dataset.clicks = String(Number(button.dataset.clicks || 0) + 1);
+    if (button.hasAttribute("data-opens-dialog")) document.querySelector("#composer-slot").hidden = false;
+  });
+});
+document.querySelectorAll('[data-testid="like"], [data-testid="unlike"]').forEach((button) => {
+  button.addEventListener("click", () => {
+    button.dataset.clicks = String(Number(button.dataset.clicks || 0) + 1);
+    if (button.dataset.testid === "like") button.dataset.testid = "unlike";
+  });
+});
+document.querySelector("#send").addEventListener("click", () => {
+  document.querySelector("#send").dataset.clicks = String(Number(document.querySelector("#send").dataset.clicks || 0) + 1);
+});
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitFor(fn, label, timeout = 2500) {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    if (fn()) return;
+    await wait(20);
+  }
+  throw new Error(`超时：${label}`);
+}
+
+function panelRoot() {
+  return document.querySelector("#quip-panel-host")?.shadowRoot || null;
+}
+
+function report(message) {
+  let node = document.querySelector("#quip-result");
+  if (!node) {
+    node = document.createElement("pre");
+    node.id = "quip-result";
+    document.body.append(node);
+  }
+  node.textContent = message;
+  document.title = message === "pass" ? "pass" : "fail";
+}
+
+function fail(error) {
+  report(error?.message || String(error));
+}
+
+async function run() {
+  await waitFor(() => document.querySelectorAll("[data-quip-ai]").length >= 4, "时间线按钮");
+  if (document.querySelector("[data-quip-ai]").textContent !== "Quip") throw new Error("操作栏按钮文案不是 Quip");
+
+  const ada = QuipPage.extractPost(document.querySelector("#tweet-a"));
+  if (ada.authorName !== "Ada" || ada.handle !== "@ada" || ada.text !== "今天的构建终于绿了。" || !ada.hasImage) {
+    throw new Error(`帖子提取错误 ${JSON.stringify(ada)}`);
+  }
+  const quote = QuipPage.extractPost(document.querySelector("#tweet-quote"));
+  if (quote.text !== "同意，补一句。" || quote.quotedText !== "原文在这里。" || !quote.hasLink) {
+    throw new Error(`引用帖提取错误 ${JSON.stringify(quote)}`);
+  }
+  if (document.querySelector("#nested [data-quip-anchor]")) throw new Error("嵌套帖子不应有入口");
+  if (!document.querySelector("#tweet-quote [data-quip-anchor]")) throw new Error("外层帖子缺少入口");
+
+  const generateCount = () => window.__calls.filter((call) => call.type === "generate").length;
+  const beforeEmpty = generateCount();
+  document.querySelector("#tweet-empty [data-quip-ai]").click();
+  await waitFor(() => panelRoot()?.textContent.includes("无法提取帖子正文"), "空帖提示");
+  if (!panelRoot().textContent.includes("今日 0/600")) throw new Error("没有显示今日用量");
+  if (generateCount() !== beforeEmpty) throw new Error("空帖子不应该请求模型");
+
+  const inlineReply = document.querySelector("#tweet-inline [data-testid='reply']");
+  document.querySelector("#tweet-inline [data-quip-ai]").click();
+  await waitFor(() => panelRoot()?.textContent.includes("认同这条"), "行内候选");
+  panelRoot().querySelector(".quip-insert").click();
+  await waitFor(() => document.querySelector("#inline-box").innerText.includes("认同这条"), "写入行内回复框");
+  if (!document.querySelector("#inline-box").innerText.includes("草稿")) throw new Error("追加时丢掉了原内容");
+  if (Number(inlineReply.dataset.clicks || 0) !== 0) throw new Error("回复框已经打开时不应再点回复");
+  if (document.querySelector("#home-compose").innerText.trim() !== "首页草稿") throw new Error("写进了首页发布框");
+
+  document.querySelector("#tweet-a [data-quip-ai]").click();
+  await waitFor(() => panelRoot()?.textContent.includes("轻提问"), "弹层候选");
+  panelRoot().querySelectorAll(".quip-insert")[2].click();
+  await waitFor(() => document.querySelector("#dialog-box").innerText.includes("你怎么看？"), "写入弹层回复框");
+  if (document.querySelector("#quip-panel-host").style.display !== "none") throw new Error("写入成功后浮层还在");
+  if (Number(document.querySelector("#send").dataset.clicks || 0) !== 0) throw new Error("插件点击了发送");
+  if (document.querySelector("#home-compose").innerText.trim() !== "首页草稿") throw new Error("弹层写入污染了首页发布框");
+
+  const scratch = document.createElement("div");
+  scratch.contentEditable = "true";
+  scratch.textContent = "已有内容";
+  document.body.append(scratch);
+  if (!QuipPage.insertIntoEditor(scratch, "覆盖文案", "overwrite") || scratch.innerText.includes("已有内容")) {
+    throw new Error("覆盖写入失败");
+  }
+
+  const liked = document.querySelector("#tweet-quote [data-testid='unlike']");
+  document.querySelector("#tweet-quote [data-quip-like]").click();
+  if (Number(liked.dataset.clicks || 0) !== 0) throw new Error("已赞帖子被再次点击");
+  if (document.querySelector("#tweet-quote [data-quip-like]").getAttribute("aria-pressed") !== "true") {
+    throw new Error("已赞状态没有反映到按钮");
+  }
+  const like = document.querySelector("#tweet-a [data-testid='like']");
+  document.querySelector("#tweet-a [data-quip-like]").click();
+  if (Number(like.dataset.clicks || 0) !== 1 || like.dataset.testid !== "unlike") throw new Error("点赞没有触发原按钮");
+
+  timeline.append(tweet({ id: "tweet-new", name: "Eve", handle: "eve", text: "新加载的帖子。", dialog: true }));
+  await waitFor(() => document.querySelector("#tweet-new [data-quip-ai]"), "新帖子入口");
+
+  window.__mode = "no-key";
+  document.querySelector("#tweet-new [data-quip-ai]").click();
+  await waitFor(() => panelRoot()?.textContent.includes("请先在选项页配置 API Key"), "缺少 Key");
+  if (!panelRoot().textContent.includes("打开选项页")) throw new Error("没有去选项页的入口");
+
+  window.__mode = "ok";
+  const dialogText = document.querySelector("#dialog-box").innerText;
+  document.querySelector("#tweet-silent [data-quip-ai]").click();
+  await waitFor(() => panelRoot()?.textContent.includes("不错"), "失败场景候选");
+  panelRoot().querySelector(".quip-insert").click();
+  await waitFor(() => panelRoot()?.textContent.includes("写入失败，回复框没有出现"), "写入失败提示", 7000);
+  if (!panelRoot().textContent.includes("认同这条")) throw new Error("失败后候选不可见");
+  if (document.querySelector("#dialog-box").innerText !== dialogText) throw new Error("失败时改写了别的回复框");
+
+  document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+  await waitFor(() => document.querySelector("#quip-panel-host").style.display === "none", "点击空白关闭");
+
+  const beforeRepeat = generateCount();
+  document.querySelector("#tweet-a [data-quip-ai]").click();
+  await waitFor(() => panelRoot()?.textContent.includes("短评"), "重新生成");
+  document.querySelector("#tweet-a [data-quip-ai]").click();
+  await waitFor(() => generateCount() >= beforeRepeat + 2, "重复点击重新请求");
+
+  if (window.__used !== 2) throw new Error(`写入计数错误 ${window.__used}`);
+  window.__dailyCap = window.__used;
+  const generatesAtCap = generateCount();
+  const likeClicks = Number(document.querySelector("#tweet-a [data-testid='unlike']").dataset.clicks || 0);
+  document.querySelector("#tweet-a [data-quip-ai]").click();
+  await waitFor(() => {
+    const notice = document.querySelector("#quip-cap-notice");
+    return notice && !notice.hidden && notice.shadowRoot?.textContent.includes("达到 2 条上限");
+  }, "上限提示");
+  if (document.querySelector("#tweet-a [data-quip-ai]").disabled !== true) throw new Error("达到上限后 Quip 按钮仍可点");
+  if (document.querySelector("#tweet-a [data-quip-like]").disabled !== true) throw new Error("达到上限后点赞图标仍可点");
+  if (generateCount() !== generatesAtCap) throw new Error("达到上限后仍在请求模型");
+  document.querySelector("#tweet-a [data-quip-like]").click();
+  if (Number(document.querySelector("#tweet-a [data-testid='unlike']").dataset.clicks || 0) !== likeClicks) {
+    throw new Error("达到上限后仍能点赞");
+  }
+  timeline.append(tweet({ id: "tweet-capped", name: "Mia", handle: "mia", text: "上限之后的新帖。", dialog: true }));
+  await waitFor(() => document.querySelector("#tweet-capped [data-quip-ai]")?.disabled === true, "新帖子也停用");
+
+  const runtime = window.chrome.runtime;
+  window.chrome.runtime = new Proxy(runtime, {
+    get(_target, prop) {
+      if (prop === "id" || prop === "sendMessage") throw new Error("Extension context invalidated.");
+      return undefined;
+    },
+  });
+  const stale = document.querySelector("#tweet-capped [data-quip-ai]");
+  stale.disabled = false;
+  stale.click();
+  await waitFor(() => document.querySelector("#quip-reload-notice")?.textContent.includes("请刷新页面"), "扩展更新提示");
+
+  report("pass");
+}
+
+run().catch(fail);

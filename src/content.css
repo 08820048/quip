@@ -1,0 +1,74 @@
+.quip-actions {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  margin-inline-start: 2px;
+}
+
+.quip-icon-btn {
+  all: unset;
+  box-sizing: border-box;
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  cursor: pointer;
+  color: inherit;
+  font: 700 11px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  transition-property: background-color, transform, opacity;
+  transition-duration: 120ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.quip-icon-btn.is-label {
+  width: auto;
+  min-width: 34px;
+  padding-inline: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.quip-icon-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linejoin: round;
+}
+
+.quip-icon-btn.is-liked {
+  color: rgb(249, 24, 128);
+}
+
+.quip-icon-btn.is-liked svg {
+  fill: currentColor;
+  stroke: none;
+}
+
+.quip-icon-btn:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.quip-icon-btn:active {
+  transform: scale(0.96);
+}
+
+.quip-icon-btn.is-busy {
+  opacity: 0.45;
+}
+
+.quip-icon-btn:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quip-icon-btn:active {
+    transform: none;
+  }
+}

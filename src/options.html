@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Quip 设置</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <header class="mast">
+        <p class="mark">Quip</p>
+        <h1>X 时间线回复助手</h1>
+        <p class="lede">评论候选写进回复框后，仍由你自己修改和发送。Key 只留在这台浏览器里。</p>
+      </header>
+
+      <form id="settings">
+        <label>
+          供应商
+          <select name="provider">
+            <option value="openai">OpenAI</option>
+            <option value="xai">xAI</option>
+            <option value="anthropic">Anthropic</option>
+            <option value="deepseek">DeepSeek</option>
+          </select>
+        </label>
+
+        <label>
+          API Key
+          <input name="apiKey" type="password" autocomplete="off" spellcheck="false" />
+        </label>
+        <p class="hint" id="key-status">未配置</p>
+        <div class="row">
+          <button type="button" id="clear-key" class="quiet">清除 Key</button>
+        </div>
+
+        <label>
+          模型名
+          <input name="model" type="text" autocomplete="off" spellcheck="false" />
+        </label>
+        <p class="hint" id="model-hint"></p>
+
+        <label>
+          人设补充
+          <textarea name="persona" rows="4" maxlength="800" placeholder="可选。例如：语气随意，少用感叹号。"></textarea>
+        </label>
+
+        <fieldset>
+          <legend>评论语言</legend>
+          <label class="choice"><input type="radio" name="language" value="auto" checked /> 跟随帖子</label>
+          <label class="choice"><input type="radio" name="language" value="zh" /> 固定中文</label>
+          <label class="choice"><input type="radio" name="language" value="en" /> 固定英文</label>
+        </fieldset>
+
+        <label>
+          候选条数
+          <select name="count">
+            <option value="3">3</option>
+            <option value="4" selected>4</option>
+            <option value="5">5</option>
+          </select>
+        </label>
+
+        <fieldset>
+          <legend>写入方式</legend>
+          <label class="choice"><input type="radio" name="insertMode" value="append" checked /> 追加到回复框末尾</label>
+          <label class="choice"><input type="radio" name="insertMode" value="overwrite" /> 覆盖回复框</label>
+        </fieldset>
+
+        <div class="usage">
+          <p class="usage-label">今日已写入</p>
+          <p class="usage-figure"><span id="usage-used">0</span><span id="usage-cap-label">/ 600</span></p>
+          <p class="hint" id="usage-note">写入回复框成功后计 1 条。按这台电脑的本地时间，每天重新计数。</p>
+        </div>
+
+        <label>
+          每日上限
+          <input name="dailyCap" type="number" min="0" max="9999" step="1" inputmode="numeric" />
+        </label>
+        <p class="hint">默认 600。达到上限后，时间线上的 Quip 按钮和点赞图标会停用。</p>
+
+        <div class="row">
+          <button type="submit" class="primary">保存</button>
+          <p class="status" id="save-status" role="status"></p>
+        </div>
+      </form>
+
+      <section class="note">
+        <h2>选择器失效</h2>
+        <p>如果时间线上没有出现 Quip 按钮，多半是 X 改了页面结构。选择器集中在 <code>src/selectors.js</code>。改完后到扩展管理页重新加载 Quip。</p>
+        <ul id="selector-list"></ul>
+      </section>
+    </main>
+    <script src="selectors.js"></script>
+    <script src="shared.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

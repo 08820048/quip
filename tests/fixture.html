@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>quip-fixture</title>
+    <style>
+      body { margin: 0; background: #fff; }
+      [contenteditable] { display: block; min-width: 240px; min-height: 48px; }
+      article { display: block; padding: 12px; }
+    </style>
+  </head>
+  <body>
+    <div id="home-compose" data-testid="tweetTextarea_0" contenteditable="true">首页草稿</div>
+    <div id="timeline"></div>
+    <div id="composer-slot" hidden>
+      <div role="dialog">
+        <div id="dialog-box" data-testid="tweetTextarea_0" contenteditable="true"></div>
+        <button id="send" data-testid="tweetButton">发送</button>
+      </div>
+    </div>
+    <script>
+      window.__calls = [];
+      window.__mode = "ok";
+      window.chrome = {
+        runtime: {
+          id: "test",
+          sendMessage(message) {
+            window.__calls.push(message);
+            if (message.type === "cancel" || message.type === "open-options") return Promise.resolve({ ok: true });
+            if (message.type === "get-public-settings") {
+              const dailyCap = window.__dailyCap ?? 600;
+              const used = window.__used ?? 0;
+              return Promise.resolve({
+                insertMode: window.__insertMode || "append",
+                dailyCap,
+                used,
+                blocked: used >= dailyCap,
+              });
+            }
+            if (message.type === "record-comment") {
+              const dailyCap = window.__dailyCap ?? 600;
+              const used = window.__used ?? 0;
+              if (used >= dailyCap) {
+                return Promise.resolve({ ok: false, code: "CAP", used, dailyCap, blocked: true });
+              }
+              window.__used = used + 1;
+              return Promise.resolve({
+                ok: true,
+                used: window.__used,
+                dailyCap,
+                blocked: window.__used >= dailyCap,
+              });
+            }
+            if (message.type === "generate") {
+              if (window.__mode === "no-key") {
+                return Promise.resolve({ ok: false, code: "NO_KEY", message: "请先在选项页配置 API Key" });
+              }
+              return Promise.resolve({
+                ok: true,
+                comments: ["认同这条", "补一个例子", "你怎么看？", "不错"],
+                styles: ["认同", "补充", "轻提问", "短评"],
+                insertMode: "append",
+              });
+            }
+            return Promise.resolve({ ok: false, message: "未知消息" });
+          },
+        },
+      };
+    </script>
+    <script src="../src/selectors.js"></script>
+    <script src="../src/shared.js"></script>
+    <script src="../src/content.js"></script>
+    <script src="fixture.js"></script>
+  </body>
+</html>
