@@ -115,4 +115,8 @@ document.querySelector("#open-options").addEventListener("click", () => {
   chrome.runtime.openOptionsPage();
 });
 
+document.querySelector("#open-nonfollow").addEventListener("click", () => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("src/nonfollow.html") });
+});
+
 load();

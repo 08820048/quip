@@ -95,7 +95,7 @@
             </label>
           </div>
         </fieldset>
-        <p class="hint">开启后当前页自己刷。间隔、点赞、评论、打开帖子和主页都会随机。评论会发送。两项都到上限后停下。</p>
+        <p class="hint">开启后当前页自己刷。间隔、点赞、评论、打开帖子和主页都会随机。评论会发送。两项都到上限后停下。不会点自己的帖，也不会再互动自己发出的评论。这一屏都刷过、再滚不动，就刷新时间线。</p>
 
         <label class="field">
           每日上限
@@ -103,6 +103,7 @@
         </label>
         <p class="status" id="save-status" role="status"></p>
       </form>
+      <button type="button" id="open-nonfollow">未回关的认证账号</button>
     </main>
     <script src="shared.js"></script>
     <script src="popup.js"></script>

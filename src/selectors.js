@@ -1,4 +1,4 @@
-// X 的帖子结构经常改。入口找不到时，只改这里的选择器。
+// X 的页面结构经常改。时间线入口或关注列表找不到时，只改这里的选择器。
 const QUIP_SELECTORS = {
   tweet: 'article[data-testid="tweet"]',
   tweetText: '[data-testid="tweetText"]',
@@ -12,7 +12,16 @@ const QUIP_SELECTORS = {
   card: '[data-testid="card.wrapper"]',
   composer: '[data-testid="tweetTextarea_0"]',
   cell: '[data-testid="cellInnerDiv"]',
+  column: '[data-testid="primaryColumn"]',
+  socialContext: '[data-testid="socialContext"]',
   sendButton: '[data-testid="tweetButton"], [data-testid="tweetButtonInline"]',
+  userCell: '[data-testid="UserCell"]',
+  verifiedIcon: '[data-testid="icon-verified"]',
+  followsYou: '[data-testid="userFollowIndicator"]',
+  unfollowButton: '[data-testid$="-unfollow"]',
+  unfollowConfirm: '[data-testid="confirmationSheetConfirm"]',
+  unfollowCancel: '[data-testid="confirmationSheetCancel"]',
+  profileTab: 'a[data-testid="AppTabBar_Profile_Link"]',
 };
 
 globalThis.QUIP_SELECTORS = QUIP_SELECTORS;

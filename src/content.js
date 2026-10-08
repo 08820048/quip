@@ -230,9 +230,11 @@ function invalidated(error) {
 function stopQuip() {
   if (stopped) return;
   stopped = true;
+  followAbort = true;
   clearTimeout(scanTimer);
   clearInterval(autoPoll);
   stopAutoWaits();
+  stopFollowWaits();
   try { ui.autoHost?.remove(); } catch { /* 页面节点可能已经不可用。 */ }
   try { pageObserver?.disconnect(); } catch { /* 扩展上下文已经失效。 */ }
   document.removeEventListener("pointerdown", onDocumentPointerDown, true);
@@ -396,6 +398,7 @@ function boot() {
   window.addEventListener("focus", onWindowFocus);
   document.addEventListener("visibilitychange", onVisibilityChange);
   scheduleScan();
+  listenForFollowJobs();
   refreshQuota().catch(() => stopQuip());
   autoPoll = setInterval(() => {
     if (!extensionAlive()) return;
@@ -1001,6 +1004,7 @@ const autoWaits = new Set();
 let autoLoopRunning = false;
 let autoPoll = 0;
 let autoSeen = new Set();
+let autoMisses = 0;
 let autoNote = "";
 
 function autoWait(ms) {
@@ -1065,6 +1069,7 @@ function maybeStartAuto() {
 
 async function runAutoLoop() {
   let progress = loadAutoProgress(ui.autoRunToken);
+  restoreAutoSeen(progress.token);
   let closing = "";
   while (!stopped && extensionAlive()) {
     const settings = await sendToBackground({ type: "get-public-settings" });
@@ -1079,7 +1084,7 @@ async function runAutoLoop() {
     if (!ui.autoRun) break;
     if (progress.token !== ui.autoRunToken) {
       progress = { token: ui.autoRunToken, likes: 0, comments: 0 };
-      autoSeen = new Set();
+      resetAutoSeen();
     }
     if (QuipShared.autoRunFinished({ ...settings, likes: progress.likes, comments: progress.comments }, quota.blocked)) {
       closing = quota.blocked && progress.comments < ui.autoStopComments ? "今日评论已到上限，已停下" : "已到上限，已停下";
@@ -1094,13 +1099,19 @@ async function runAutoLoop() {
       await autoWait(4000);
       continue;
     }
+    if (onOwnSurface()) {
+      setAutoNote("离开自己的主页");
+      location.assign(`${location.origin}/home`);
+      await autoWait(1500);
+      continue;
+    }
     let action = QuipShared.pickAutoAction({
       ...settings,
       likes: progress.likes,
       comments: progress.comments,
       commentBlocked: quota.blocked,
     }, Math.random);
-    if (ui.open || ui.inserting) action = "pause";
+    if (ui.open || ui.inserting || followBusy) action = "pause";
     await autoWait(QuipShared.autoWaitMs(action, Math.random));
     if (stopped || !extensionAlive() || !ui.autoRun) break;
     let outcome = "";
@@ -1148,10 +1159,148 @@ function autoSkipsPage() {
   return /^\/(messages|settings|compose|account|i\/)/.test(location.pathname);
 }
 
+function isWindowScroller(root) {
+  return !root || root === document.scrollingElement || root === document.documentElement || root === document.body;
+}
+
+function canScroll(element) {
+  if (!element || element === document.body || element === document.documentElement) return false;
+  const style = getComputedStyle(element);
+  if (!/(auto|scroll|overlay)/.test(style.overflowY)) return false;
+  if (element.clientHeight < 200) return false;
+  return element.scrollHeight > element.clientHeight + 80;
+}
+
+function timelineScroller() {
+  let current = document.querySelector(QUIP_SELECTORS.tweet)?.parentElement;
+  while (current && current !== document.documentElement) {
+    if (canScroll(current)) return current;
+    current = current.parentElement;
+  }
+  const column = document.querySelector(QUIP_SELECTORS.column);
+  if (column) {
+    for (const element of column.querySelectorAll("div, section")) {
+      if (canScroll(element)) return element;
+    }
+  }
+  return document.scrollingElement || document.documentElement;
+}
+
+function timelineTop(root) {
+  return isWindowScroller(root) ? window.scrollY : root.scrollTop;
+}
+
+function nudgeScroller(root, distance) {
+  const before = timelineTop(root);
+  if (isWindowScroller(root)) window.scrollBy(0, distance);
+  else root.scrollBy(0, distance);
+  if (Math.abs(timelineTop(root) - before) > 24) return;
+  if (isWindowScroller(root)) window.scrollTo(0, before + distance);
+  else root.scrollTop = before + distance;
+}
+
 function autoScroll() {
+  const root = timelineScroller();
+  const view = isWindowScroller(root) ? window.innerHeight : root.clientHeight;
   const direction = Math.random() < 0.18 ? -1 : 1;
-  const distance = (280 + Math.floor(Math.random() * 720)) * direction;
-  window.scrollBy({ top: distance, behavior: "smooth" });
+  const distance = Math.round(Math.max(280, view * (0.35 + Math.random() * 0.45))) * direction;
+  nudgeScroller(root, distance);
+}
+
+function articleHandle(article) {
+  const fromProfile = profileHandleFromHref(profileLink(article)?.getAttribute("href") || "").toLowerCase();
+  if (fromProfile) return fromProfile;
+  const status = statusLink(article)?.getAttribute("href") || "";
+  const match = status.match(/\/([A-Za-z0-9_]{1,15})\/status\/\d+/);
+  if (match) return match[1].toLowerCase();
+  return extractPost(article).handle.replace(/^@/, "").toLowerCase();
+}
+
+function isOwnTweet(article) {
+  const self = loggedInHandle().toLowerCase();
+  if (!self || !article) return false;
+  return articleHandle(article) === self;
+}
+
+function isOwnInteraction(article) {
+  if (!article || isOwnTweet(article)) return Boolean(article) && isOwnTweet(article);
+  const context = article.closest(QUIP_SELECTORS.cell)?.querySelector(QUIP_SELECTORS.socialContext)?.innerText || "";
+  return /你回复了|You replied/i.test(context);
+}
+
+function onOwnSurface() {
+  const self = loggedInHandle().toLowerCase();
+  if (!self) return false;
+  return location.pathname.split("/").filter(Boolean)[0]?.toLowerCase() === self;
+}
+
+function setAutoNote(text) {
+  const status = ui.autoHost?.shadowRoot?.querySelector("[data-auto-note]");
+  if (status && text) status.textContent = text;
+}
+
+function reloadAge() {
+  try {
+    const previous = Number(sessionStorage.getItem("quip-auto-reload-at") || 0);
+    if (!previous) return Number.POSITIVE_INFINITY;
+    return Date.now() - previous;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+function shouldRefreshTimeline(misses, sinceReloadMs) {
+  return misses >= 3 && sinceReloadMs >= 25000;
+}
+
+function restoreAutoSeen(token) {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("quip-auto-seen") || "null");
+    if (saved && saved.token === token && Array.isArray(saved.keys)) {
+      autoSeen = new Set(saved.keys.filter((key) => typeof key === "string").slice(-500));
+      return;
+    }
+  } catch {
+    // 读不到就从头记。
+  }
+  autoSeen = new Set();
+}
+
+function resetAutoSeen() {
+  autoSeen = new Set();
+  try { sessionStorage.removeItem("quip-auto-seen"); } catch { /* 这一轮只用内存。 */ }
+}
+
+function rememberSeen(key) {
+  if (!key) return;
+  autoSeen.add(key);
+  try {
+    sessionStorage.setItem("quip-auto-seen", JSON.stringify({
+      token: ui.autoRunToken || 0,
+      keys: [...autoSeen].slice(-500),
+    }));
+  } catch {
+    // 刷新后可能再看到同一条，作者判断仍会跳过自己的评论。
+  }
+}
+
+async function advanceTimeline() {
+  const root = timelineScroller();
+  const before = timelineTop(root);
+  const view = isWindowScroller(root) ? window.innerHeight : root.clientHeight;
+  nudgeScroller(root, Math.round(Math.max(420, view * (0.65 + Math.random() * 0.25))));
+  await autoWait(700);
+  if (stopped || !ui.autoRun) return;
+  const moved = Math.abs(timelineTop(root) - before) > 24;
+  if (moved) autoMisses = 0;
+  else autoMisses += 1;
+  if (!shouldRefreshTimeline(autoMisses, reloadAge())) return;
+  autoMisses = 0;
+  try { sessionStorage.setItem("quip-auto-reload-at", String(Date.now())); } catch { /* 照样刷新。 */ }
+  setAutoNote("时间线刷过了，正在刷新");
+  const path = location.pathname.replace(/\/+$/, "");
+  if (path === "/home") location.reload();
+  else location.assign(`${location.origin}/home`);
 }
 
 function visibleTweets() {
@@ -1186,14 +1335,15 @@ function tweetKey(article) {
 }
 
 async function autoLikeOne() {
-  const article = pickTweet((node) => !isLiked(node) && ownControl(node, QUIP_SELECTORS.likeButton));
+  const article = pickTweet((node) => !isOwnInteraction(node) && !isLiked(node) && ownControl(node, QUIP_SELECTORS.likeButton));
   if (!article) {
-    autoScroll();
+    await advanceTimeline();
     return false;
   }
+  autoMisses = 0;
   article.scrollIntoView({ block: "center", behavior: "smooth" });
   await autoWait(350 + Math.floor(Math.random() * 900));
-  if (stopped || !ui.autoRun || isLiked(article)) return false;
+  if (stopped || !ui.autoRun || isLiked(article) || isOwnInteraction(article)) return false;
   likeTweet(article);
   await autoWait(400);
   refreshLikeButtons();
@@ -1201,16 +1351,17 @@ async function autoLikeOne() {
 }
 
 async function autoVisit(kind) {
-  const article = pickTweet((node) => (kind === "detail" ? statusLink(node) : profileLink(node)));
+  const article = pickTweet((node) => !isOwnInteraction(node) && (kind === "detail" ? statusLink(node) : profileLink(node)));
   if (!article) {
-    autoScroll();
+    await advanceTimeline();
     return;
   }
+  autoMisses = 0;
   const link = kind === "detail" ? statusLink(article) : profileLink(article);
   if (!link) return;
   article.scrollIntoView({ block: "center", behavior: "smooth" });
   await autoWait(400 + Math.floor(Math.random() * 800));
-  if (stopped || !ui.autoRun) return;
+  if (stopped || !ui.autoRun || isOwnInteraction(article)) return;
   const before = location.href;
   link.click();
   await autoWait(4000 + Math.floor(Math.random() * 8000));
@@ -1229,16 +1380,17 @@ function chooseAutoText(comments) {
 
 async function autoCommentOne() {
   if (quota.blocked || ui.inserting || ui.open) return "";
-  const article = pickTweet((node) => extractPost(node).text && !autoSeen.has(tweetKey(node)));
+  const article = pickTweet((node) => !isOwnInteraction(node) && extractPost(node).text && !autoSeen.has(tweetKey(node)));
   if (!article) {
-    autoScroll();
+    await advanceTimeline();
     return "";
   }
+  autoMisses = 0;
   const post = extractPost(article);
   const key = tweetKey(article);
   article.scrollIntoView({ block: "center", behavior: "smooth" });
   await autoWait(500 + Math.floor(Math.random() * 900));
-  if (stopped || !ui.autoRun || ui.open) return "";
+  if (stopped || !ui.autoRun || ui.open || isOwnInteraction(article)) return "";
   const requestId = (() => {
     ui.requestId += 1;
     return ui.requestId;
@@ -1254,7 +1406,7 @@ async function autoCommentOne() {
   }
   const text = chooseAutoText(response.comments || []);
   if (!text) return "";
-  autoSeen.add(key);
+  rememberSeen(key);
   ui.inserting = true;
   try {
     const editor = await ensureComposer(article);
@@ -1269,7 +1421,7 @@ async function autoCommentOne() {
       closeComposer(editor);
       return "";
     }
-    if (!clickSend(editor)) {
+    if (isOwnInteraction(article) || !clickSend(editor)) {
       closeComposer(editor);
       return "";
     }
@@ -1431,6 +1583,351 @@ function onViewportChange() {
   positionPanel();
 }
 
+const FOLLOW_RESERVED = new Set([
+  "home", "explore", "search", "notifications", "messages", "settings", "compose",
+  "i", "following", "followers", "verified_followers", "jobs", "tos", "privacy", "login", "signup", "intent",
+]);
+let followBusy = false;
+let followAbort = false;
+const followWaits = new Set();
+
+function stopFollowWaits() {
+  for (const finish of [...followWaits]) finish();
+}
+
+function followWait(ms) {
+  const delay = window.__quipFollowFast === true ? 0 : Math.max(0, Number(ms) || 0);
+  if (delay === 0) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(finish, delay);
+    function finish() {
+      clearTimeout(timer);
+      followWaits.delete(finish);
+      resolve();
+    }
+    followWaits.add(finish);
+  });
+}
+
+function followGapMs(random = Math.random) {
+  return 2200 + Math.floor(random() * 2800);
+}
+
+function profileHandleFromHref(href) {
+  const raw = String(href || "").trim();
+  if (!raw) return "";
+  let pathname = "";
+  try {
+    const url = new URL(raw, "https://x.com");
+    const host = url.hostname.replace(/^www\./, "");
+    if (host !== "x.com" && host !== "twitter.com") return "";
+    pathname = url.pathname;
+  } catch {
+    return "";
+  }
+  const match = pathname.match(/^\/([A-Za-z0-9_]{1,15})\/?$/);
+  if (!match || FOLLOW_RESERVED.has(match[1].toLowerCase())) return "";
+  return match[1];
+}
+
+function loggedInHandle() {
+  const link = document.querySelector(QUIP_SELECTORS.profileTab);
+  return profileHandleFromHref(link?.getAttribute("href") || "");
+}
+
+function readUserCell(cell) {
+  const nameBlock = cell?.querySelector(QUIP_SELECTORS.userName);
+  let handle = "";
+  for (const link of nameBlock?.querySelectorAll("a[href]") || []) {
+    handle = profileHandleFromHref(link.getAttribute("href"));
+    if (handle) break;
+  }
+  const lines = (nameBlock?.innerText || "").split("\n").map((line) => line.trim()).filter(Boolean);
+  const name = lines.find((line) => line !== `@${handle}` && line !== "关注了你" && !/^follows you$/i.test(line)) || handle;
+  const verified = Boolean(
+    cell?.querySelector(QUIP_SELECTORS.verifiedIcon)
+    || cell?.querySelector('svg[aria-label*="Verified" i], svg[aria-label*="认证"]'),
+  );
+  return {
+    handle,
+    name: name.slice(0, 80),
+    verified,
+    followsYou: Boolean(cell?.querySelector(QUIP_SELECTORS.followsYou)),
+  };
+}
+
+function collectVerifiedNonMutual(root = document) {
+  const self = loggedInHandle().toLowerCase();
+  const found = new Map();
+  for (const cell of root.querySelectorAll(QUIP_SELECTORS.userCell)) {
+    const row = readUserCell(cell);
+    const key = row.handle.toLowerCase();
+    if (!key || key === self || !row.verified || row.followsYou || found.has(key)) continue;
+    found.set(key, { handle: row.handle, name: row.name });
+  }
+  return [...found.values()];
+}
+
+function onFollowingPage() {
+  return /^\/[A-Za-z0-9_]{1,15}\/following\/?$/.test(location.pathname);
+}
+
+function blockedFollowPath() {
+  return /^\/(messages|settings|compose|account|i)(\/|$)/.test(location.pathname);
+}
+
+function pageScroller() {
+  let current = document.querySelector(QUIP_SELECTORS.userCell)?.parentElement
+    || document.querySelector('[data-testid="primaryColumn"]');
+  while (current && current !== document.body) {
+    const style = getComputedStyle(current);
+    if (/(auto|scroll)/.test(style.overflowY) && current.scrollHeight > current.clientHeight + 40) return current;
+    current = current.parentElement;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+
+function scrollerTop(root) {
+  if (root === document.scrollingElement || root === document.documentElement || root === document.body) return window.scrollY;
+  return root.scrollTop;
+}
+
+function scrollerView(root) {
+  if (root === document.scrollingElement || root === document.documentElement || root === document.body) return window.innerHeight;
+  return root.clientHeight;
+}
+
+function atScrollEnd() {
+  const root = pageScroller();
+  return scrollerTop(root) + scrollerView(root) >= root.scrollHeight - 24;
+}
+
+function scrollFollowBy(px) {
+  const root = pageScroller();
+  if (root === document.scrollingElement || root === document.documentElement || root === document.body) window.scrollBy(0, px);
+  else root.scrollBy(0, px);
+}
+
+function scrollFollowTop() {
+  const root = pageScroller();
+  if (root === document.scrollingElement || root === document.documentElement || root === document.body) window.scrollTo(0, 0);
+  else root.scrollTop = 0;
+}
+
+function reportFollow(payload) {
+  if (!extensionAlive()) return;
+  try {
+    const pending = chrome.runtime.sendMessage({ type: "nonmutual-progress", ...payload });
+    Promise.resolve(pending).catch(() => {});
+  } catch {
+    // 列表页已经关掉时，不再报进度。
+  }
+}
+
+function cleanHandles(list) {
+  const out = [];
+  const seen = new Set();
+  for (const item of Array.isArray(list) ? list : []) {
+    const handle = String(item || "").trim();
+    if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) continue;
+    const key = handle.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(handle);
+    if (out.length >= 500) break;
+  }
+  return out;
+}
+
+function waitForNode(selector, ms) {
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const tick = () => {
+      if (followAbort) return resolve(null);
+      const node = document.querySelector(selector);
+      if (node) return resolve(node);
+      if (Date.now() - started >= ms) return resolve(null);
+      setTimeout(tick, 40);
+    };
+    tick();
+  });
+}
+
+async function confirmUnfollow() {
+  const button = await waitForNode(QUIP_SELECTORS.unfollowConfirm, window.__quipFollowFast === true ? 400 : 5000);
+  if (!button || followAbort || !button.isConnected) return false;
+  await followWait(180);
+  if (followAbort || !button.isConnected) return false;
+  button.click();
+  const started = Date.now();
+  const limit = window.__quipFollowFast === true ? 400 : 2500;
+  while (document.querySelector(QUIP_SELECTORS.unfollowConfirm) && Date.now() - started < limit) {
+    if (followAbort) return false;
+    await followWait(80);
+    if (window.__quipFollowFast === true) break;
+  }
+  return !document.querySelector(QUIP_SELECTORS.unfollowConfirm);
+}
+
+async function dismissStrayConfirm() {
+  if (!document.querySelector(QUIP_SELECTORS.unfollowConfirm)) return;
+  document.querySelector(QUIP_SELECTORS.unfollowCancel)?.click();
+  await followWait(200);
+}
+
+async function unfollowCell(cell) {
+  const row = readUserCell(cell);
+  if (!row.handle || !row.verified || row.followsYou) return false;
+  await dismissStrayConfirm();
+  if (followAbort) return false;
+  const button = cell.querySelector(QUIP_SELECTORS.unfollowButton)
+    || [...cell.querySelectorAll("button")].find((node) => /Following @|正在关注/.test(node.getAttribute("aria-label") || ""));
+  if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") return false;
+  button.click();
+  return confirmUnfollow();
+}
+
+function absorbVisibleFollows(hits, looked) {
+  const self = loggedInHandle().toLowerCase();
+  for (const cell of document.querySelectorAll(QUIP_SELECTORS.userCell)) {
+    const row = readUserCell(cell);
+    const key = row.handle.toLowerCase();
+    if (!key || key === self) continue;
+    looked.add(key);
+    if (row.verified && !row.followsYou) hits.set(key, { handle: row.handle, name: row.name });
+    else hits.delete(key);
+  }
+}
+
+function followStuck(lastTop) {
+  const top = scrollerTop(pageScroller());
+  const stuck = top === lastTop ? 1 : 0;
+  return { top, stuck, ended: stuck === 1 && atScrollEnd() };
+}
+
+async function scanNonMutual(job) {
+  if (followBusy) return { ok: false, code: "BUSY", job };
+  if (blockedFollowPath() || !onFollowingPage()) return { ok: false, code: "NOT_FOLLOWING", job };
+  followAbort = false;
+  followBusy = true;
+  const hits = new Map();
+  const looked = new Set();
+  let lastTop = -1;
+  let stuck = 0;
+  try {
+    for (let step = 0; step < 400; step += 1) {
+      if (followAbort || !extensionAlive()) break;
+      absorbVisibleFollows(hits, looked);
+      const users = [...hits.values()];
+      reportFollow({ job, phase: "scan", looked: looked.size, users, done: false });
+      if (looked.size >= 5000) break;
+      if (looked.size === 0 && step < 8) {
+        await followWait(400);
+        continue;
+      }
+      const mark = followStuck(lastTop);
+      lastTop = mark.top;
+      stuck = mark.stuck ? stuck + 1 : 0;
+      if ((stuck >= 2 && mark.ended) || stuck >= 4) break;
+      scrollFollowBy(Math.round(scrollerView(pageScroller()) * (0.62 + Math.random() * 0.2)));
+      await followWait(450 + Math.floor(Math.random() * 450));
+    }
+    const users = [...hits.values()];
+    reportFollow({ job, phase: "scan", looked: looked.size, users, done: true, stopped: followAbort });
+    return { ok: true, job, users, looked: looked.size, stopped: followAbort };
+  } finally {
+    followBusy = false;
+  }
+}
+
+async function unfollowHandles(handles, job) {
+  const pending = cleanHandles(handles);
+  if (!pending.length) return { ok: false, code: "EMPTY", job };
+  if (followBusy) return { ok: false, code: "BUSY", job };
+  if (blockedFollowPath() || !onFollowingPage()) return { ok: false, code: "NOT_FOLLOWING", job };
+  followAbort = false;
+  followBusy = true;
+  const want = new Map(pending.map((handle) => [handle.toLowerCase(), handle]));
+  const done = [];
+  const missed = [];
+  let lastTop = -1;
+  let stuck = 0;
+  try {
+    scrollFollowTop();
+    await followWait(350);
+    for (let step = 0; step < 400 && want.size && !followAbort && extensionAlive(); step += 1) {
+      for (const cell of [...document.querySelectorAll(QUIP_SELECTORS.userCell)]) {
+        if (followAbort || !extensionAlive()) break;
+        const row = readUserCell(cell);
+        const key = row.handle.toLowerCase();
+        if (!want.has(key)) continue;
+        want.delete(key);
+        try { cell.scrollIntoView({ block: "center" }); } catch { /* 页面滚动容器不可用时直接点。 */ }
+        const ok = await unfollowCell(cell);
+        if (ok) done.push(row.handle);
+        else missed.push(row.handle);
+        reportFollow({
+          job,
+          phase: "unfollow",
+          handle: row.handle,
+          ok,
+          done: done.length,
+          left: want.size,
+          total: pending.length,
+        });
+        if (want.size && !followAbort) await followWait(followGapMs());
+      }
+      if (!want.size || followAbort) break;
+      const mark = followStuck(lastTop);
+      lastTop = mark.top;
+      stuck = mark.stuck ? stuck + 1 : 0;
+      if ((stuck >= 2 && mark.ended) || stuck >= 4) break;
+      scrollFollowBy(Math.round(scrollerView(pageScroller()) * 0.7));
+      await followWait(500);
+    }
+    for (const handle of want.values()) missed.push(handle);
+    reportFollow({ job, phase: "unfollow", done: done.length, missed, stopped: followAbort, finished: true });
+    return { ok: true, job, done, missed, stopped: followAbort };
+  } finally {
+    followBusy = false;
+  }
+}
+
+function listenForFollowJobs() {
+  const runtime = globalThis.chrome?.runtime;
+  if (!runtime?.onMessage?.addListener || listenForFollowJobs.bound) return;
+  listenForFollowJobs.bound = true;
+  runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (!message || typeof message !== "object") return;
+    let senderId = "";
+    try { senderId = sender?.id || ""; } catch { return; }
+    try {
+      if (!extensionAlive() || senderId !== chrome.runtime.id) return;
+    } catch {
+      return;
+    }
+    const job = message.job;
+    if (message.type === "whoami") {
+      sendResponse({ ok: true, job, handle: loggedInHandle() });
+      return;
+    }
+    if (message.type === "stop-follow-job") {
+      followAbort = true;
+      stopFollowWaits();
+      sendResponse({ ok: true, job });
+      return;
+    }
+    if (message.type === "scan-nonmutual") {
+      scanNonMutual(job).then(sendResponse);
+      return true;
+    }
+    if (message.type === "unfollow-nonmutual") {
+      unfollowHandles(message.handles, job).then(sendResponse);
+      return true;
+    }
+  });
+}
+
 globalThis.QuipPage = {
   extractPost,
   insertIntoEditor,
@@ -1438,6 +1935,12 @@ globalThis.QuipPage = {
   likeTweet,
   isLiked,
   scanTweets,
+  loggedInHandle,
+  readUserCell,
+  collectVerifiedNonMutual,
+  unfollowCell,
+  isOwnInteraction,
+  shouldRefreshTimeline,
 };
 
 if (globalThis.chrome?.runtime?.id) {

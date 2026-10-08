@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>未回关的认证账号 · Quip</title>
+    <link rel="stylesheet" href="nonfollow.css" />
+  </head>
+  <body>
+    <main>
+      <header class="mast">
+        <p class="mark">Quip</p>
+        <h1>未回关的认证账号</h1>
+        <p class="lede">只看你正在关注的认证账号里，没有「关注了你」的人。勾选并确认后，才会在关注页上逐个取消关注。</p>
+      </header>
+
+      <section class="card">
+        <div class="bar">
+          <button type="button" class="primary" id="start">开始查看</button>
+          <button type="button" id="stop" hidden>停止</button>
+        </div>
+        <p class="status" id="status" role="status">会切到你的 X 标签页，打开正在关注，再往下翻。</p>
+        <p class="hint">一次取消很多关注，X 可能会限制操作。每个之间会隔几秒，可以随时停。</p>
+      </section>
+
+      <section class="card" id="results" hidden>
+        <div class="bar">
+          <label class="check"><input type="checkbox" id="all" checked />全选</label>
+          <p class="count" id="count">已选 0 / 0</p>
+          <button type="button" class="primary" id="unfollow" disabled>取消关注所选</button>
+        </div>
+        <div id="list"></div>
+      </section>
+    </main>
+    <script src="nonfollow.js"></script>
+  </body>
+</html>

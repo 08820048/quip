@@ -251,6 +251,83 @@ async function run() {
   timeline.append(tweet({ id: "tweet-capped", name: "Mia", handle: "mia", text: "上限之后的新帖。", dialog: true }));
   await waitFor(() => document.querySelector("#tweet-capped [data-quip-ai]")?.disabled === true, "新帖子也停用");
 
+  window.__quipFollowFast = true;
+  const me = document.createElement("a");
+  me.dataset.testid = "AppTabBar_Profile_Link";
+  me.setAttribute("href", "/myself");
+  document.body.append(me);
+  if (QuipPage.loggedInHandle() !== "myself") throw new Error("没有读到当前登录账号");
+
+  function userRow({ handle, name, verified, follows, aria }) {
+    const node = document.createElement("div");
+    node.dataset.testid = "UserCell";
+    node.id = `user-${handle}${aria ? "-aria" : ""}`;
+    const badge = verified
+      ? '<svg data-testid="icon-verified" aria-label="Verified account"></svg>'
+      : (aria ? '<svg aria-label="已认证"></svg>' : "");
+    node.innerHTML = `
+      <div data-testid="User-Name">
+        <a href="/${handle}"><span>${name}</span></a>
+        <a href="/${handle}"><span>@${handle}</span></a>
+        ${badge}
+      </div>
+      ${follows ? '<span data-testid="userFollowIndicator">关注了你</span>' : ""}
+      <button data-testid="${handle}-unfollow" aria-label="Following @${handle}"></button>
+    `;
+    const button = node.querySelector("button");
+    button.addEventListener("click", () => {
+      button.dataset.clicks = String(Number(button.dataset.clicks || 0) + 1);
+      const sheet = document.createElement("button");
+      sheet.dataset.testid = "confirmationSheetConfirm";
+      document.body.append(sheet);
+      sheet.addEventListener("click", () => {
+        sheet.dataset.clicks = String(Number(sheet.dataset.clicks || 0) + 1);
+        sheet.remove();
+      });
+    });
+    return node;
+  }
+
+  const follows = document.createElement("div");
+  follows.id = "follows";
+  follows.append(
+    userRow({ handle: "gold", name: "Gold", verified: true, follows: false }),
+    userRow({ handle: "gold", name: "Gold", verified: true, follows: false }),
+    userRow({ handle: "pal", name: "Pal", verified: true, follows: true }),
+    userRow({ handle: "plain", name: "Plain", verified: false, follows: false }),
+    userRow({ handle: "aria", name: "Aria", aria: true, follows: false }),
+    userRow({ handle: "myself", name: "Me", verified: true, follows: false }),
+  );
+  document.body.append(follows);
+  const listed = QuipPage.collectVerifiedNonMutual(follows).map((row) => row.handle);
+  if (listed.join(",") !== "gold,aria") throw new Error(`未回关名单不对 ${listed.join(",")}`);
+  const pal = QuipPage.readUserCell(follows.querySelector("#user-pal"));
+  if (!pal.verified || !pal.followsYou) throw new Error("回关的认证账号被看成未回关");
+  const sendsBeforeUnfollow = Number(document.querySelector("#send").dataset.clicks || 0);
+  const goldButton = follows.querySelector("#user-gold [data-testid$='-unfollow']");
+  const palButton = follows.querySelector("#user-pal [data-testid$='-unfollow']");
+  if (!await QuipPage.unfollowCell(follows.querySelector("#user-gold"))) throw new Error("未回关的认证账号没有取消关注");
+  if (goldButton.dataset.clicks !== "1") throw new Error("取消关注没有点到按钮");
+  if (document.querySelector("[data-testid='confirmationSheetConfirm']")) throw new Error("确认层没有关掉");
+  if (await QuipPage.unfollowCell(follows.querySelector("#user-pal"))) throw new Error("回关的认证账号被取消关注");
+  if (Number(palButton.dataset.clicks || 0) !== 0) throw new Error("回关账号的按钮被点了");
+  if (await QuipPage.unfollowCell(follows.querySelector("#user-plain"))) throw new Error("未认证账号被取消关注");
+  if (Number(document.querySelector("#send").dataset.clicks || 0) !== sendsBeforeUnfollow) throw new Error("取消关注时点了发送");
+
+  const ownPost = tweet({ id: "tweet-own", name: "Me", handle: "myself", text: "这是我自己发的。" });
+  const otherPost = tweet({ id: "tweet-other", name: "Ada", handle: "ada", text: "这是别人的。" });
+  const repliedPost = tweet({ id: "tweet-replied", name: "Bea", handle: "bea", text: "我回复过的原帖。" });
+  const marker = document.createElement("div");
+  marker.dataset.testid = "socialContext";
+  marker.textContent = "你回复了";
+  repliedPost.prepend(marker);
+  if (!QuipPage.isOwnInteraction(ownPost.querySelector("article"))) throw new Error("自己的帖子还会被互动");
+  if (QuipPage.isOwnInteraction(otherPost.querySelector("article"))) throw new Error("别人的帖子被当成自己的");
+  if (!QuipPage.isOwnInteraction(repliedPost.querySelector("article"))) throw new Error("自己发出的评论还会被互动");
+  if (QuipPage.shouldRefreshTimeline(2, 60000)) throw new Error("还没刷完就刷新");
+  if (!QuipPage.shouldRefreshTimeline(3, 60000)) throw new Error("刷完没有刷新");
+  if (QuipPage.shouldRefreshTimeline(3, 1000)) throw new Error("刚刷新完又刷新");
+
   const runtime = window.chrome.runtime;
   window.chrome.runtime = new Proxy(runtime, {
     get(_target, prop) {

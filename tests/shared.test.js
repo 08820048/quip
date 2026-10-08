@@ -192,7 +192,13 @@ test("manifest is a v3 extension aimed at X", () => {
   assert.match(popup, /name="autoLike"/);
   assert.match(popup, /name="dailyCap"/);
   assert.match(popup, /完整设置/);
+  assert.match(popup, /id="open-nonfollow"/);
   assert.equal(/apiKey|type="password"/i.test(popup), false);
+  const nonfollow = fs.readFileSync(path.join(root, "src/nonfollow.html"), "utf8");
+  const nonfollowScript = fs.readFileSync(path.join(root, "src/nonfollow.js"), "utf8");
+  assert.match(nonfollow, /取消关注所选/);
+  assert.equal(/apiKey|type="password"/i.test(nonfollow + nonfollowScript), false);
+  assert.match(nonfollowScript, /unfollow-nonmutual/);
   const popupScript = fs.readFileSync(path.join(root, "src/popup.js"), "utf8");
   assert.match(popupScript, /chrome\.storage\.local\.set/);
   assert.match(popupScript, /openOptionsPage/);
