@@ -39,6 +39,44 @@ test("normalizes settings and ignores unknown values", () => {
   assert.equal(QuipShared.normalizeSettings({ dailyCap: 9999 }).dailyCap, 9999);
   assert.equal(QuipShared.normalizeSettings({ dailyCap: 10000 }).dailyCap, 600);
   assert.equal(QuipShared.normalizeSettings({ dailyCap: 12.5 }).dailyCap, 600);
+  assert.equal(QuipShared.normalizeSettings({}).autoRun, false);
+  assert.equal(QuipShared.normalizeSettings({}).autoStopLikes, 20);
+  assert.equal(QuipShared.normalizeSettings({}).autoStopComments, 10);
+  const running = QuipShared.normalizeSettings({ autoRun: "on", autoStopLikes: "15", autoStopComments: 0, autoRunToken: 42 });
+  assert.equal(running.autoRun, true);
+  assert.equal(running.autoStopLikes, 15);
+  assert.equal(running.autoStopComments, 0);
+  assert.equal(running.autoRunToken, 42);
+  assert.equal(QuipShared.normalizeSettings({ autoStopLikes: 1000 }).autoStopLikes, 20);
+});
+
+test("picks an automatic comment by position or at random", () => {
+  const defaults = QuipShared.normalizeSettings({});
+  assert.equal(defaults.autoInsert, "off");
+  assert.equal(defaults.autoInsertIndex, 1);
+  assert.equal(defaults.autoLike, false);
+  const configured = QuipShared.normalizeSettings({ autoInsert: "position", autoInsertIndex: "3", autoLike: "on" });
+  assert.equal(configured.autoInsert, "position");
+  assert.equal(configured.autoInsertIndex, 3);
+  assert.equal(configured.autoLike, true);
+  assert.equal(QuipShared.normalizeSettings({ autoInsert: "sideways", autoInsertIndex: 9 }).autoInsert, "off");
+  const comments = ["认同", "补充", "提问", "短评"];
+  assert.equal(QuipShared.pickAutoComment(comments, { autoInsert: "off" }), null);
+  assert.equal(QuipShared.pickAutoComment(comments, { autoInsert: "position", autoInsertIndex: 2 }), "补充");
+  assert.equal(QuipShared.pickAutoComment(comments, { autoInsert: "position", autoInsertIndex: 5 }), "短评");
+  assert.equal(QuipShared.pickAutoComment(comments, { autoInsert: "random" }, () => 0), "认同");
+  assert.equal(QuipShared.pickAutoComment(comments, { autoInsert: "random" }, () => 0.99), "短评");
+  const pace = { autoStopLikes: 20, autoStopComments: 10 };
+  assert.equal(QuipShared.pickAutoAction({ ...pace, likes: 0, comments: 0 }, () => 0), "scroll");
+  assert.equal(QuipShared.pickAutoAction({ ...pace, likes: 20, comments: 10 }, () => 0.5), "scroll");
+  assert.equal(QuipShared.pickAutoAction({ ...pace, likes: 0, comments: 0, commentBlocked: true }, () => 0.45), "pause");
+  assert.equal(QuipShared.autoRunFinished({ ...pace, likes: 20, comments: 10 }), true);
+  assert.equal(QuipShared.autoRunFinished({ ...pace, likes: 19, comments: 10 }), false);
+  assert.equal(QuipShared.autoRunFinished({ autoStopLikes: 0, autoStopComments: 0, likes: 0, comments: 0 }), true);
+  assert.equal(QuipShared.autoRunFinished({ ...pace, likes: 20, comments: 1 }, true), true);
+  let roll = 0;
+  const sequence = [0, 0.5];
+  assert.equal(QuipShared.autoWaitMs("scroll", () => sequence[roll++] ?? 0), 1200);
 });
 
 test("resets the daily comment count on a new local date", () => {
@@ -75,9 +113,16 @@ test("builds a prompt without the API key", () => {
       hasLink: true,
     },
   );
-  assert.match(prompt.system, /认同、补充、轻提问、短评、短评/);
-  assert.match(prompt.system, /少用感叹号/);
+  assert.match(prompt.system, /人设：少用感叹号/);
+  assert.match(prompt.user, /按这段人设写 5 条不同的回复：少用感叹号/);
+  assert.equal(/认同|补充|轻提问|短评/.test(prompt.system), false);
+  assert.equal(/认同|补充|轻提问|短评/.test(prompt.user), false);
   assert.match(prompt.system, /Use English/);
+  assert.equal(QuipShared.commentStyles({ persona: "少用感叹号", count: 5 }).length, 0);
+  const plain = QuipShared.buildPrompt({ count: 4, language: "zh" }, { text: "你好" });
+  assert.match(plain.system, /数组顺序对应这些风格：认同、补充、轻提问、短评/);
+  assert.equal(plain.system.includes("人设"), false);
+  assert.deepEqual([...QuipShared.commentStyles({ count: 4 })], ["认同", "补充", "轻提问", "短评"]);
   assert.match(prompt.user, /（正文已截断）/);
   assert.match(prompt.user, /引用：original/);
   assert.equal(prompt.system.includes("sk-super-secret-value"), false);
@@ -138,6 +183,19 @@ test("manifest is a v3 extension aimed at X", () => {
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.name, "Quip");
   assert.deepEqual(manifest.content_scripts[0].matches, ["https://x.com/*", "https://twitter.com/*"]);
+  assert.equal(manifest.action.default_popup, "src/popup.html");
   assert.equal(manifest.permissions.includes("storage"), true);
   assert.equal(JSON.stringify(manifest).includes("apiKey"), false);
+  const popup = fs.readFileSync(path.join(root, "src/popup.html"), "utf8");
+  assert.match(popup, /id="used"/);
+  assert.match(popup, /name="autoInsert"/);
+  assert.match(popup, /name="autoLike"/);
+  assert.match(popup, /name="dailyCap"/);
+  assert.match(popup, /完整设置/);
+  assert.equal(/apiKey|type="password"/i.test(popup), false);
+  const popupScript = fs.readFileSync(path.join(root, "src/popup.js"), "utf8");
+  assert.match(popupScript, /chrome\.storage\.local\.set/);
+  assert.match(popupScript, /openOptionsPage/);
+  const background = fs.readFileSync(path.join(root, "src/background.js"), "utf8");
+  assert.equal(background.includes("chrome.action.onClicked"), false);
 });

@@ -35,6 +35,9 @@
                 dailyCap,
                 used,
                 blocked: used >= dailyCap,
+                autoInsert: window.__autoInsert || "off",
+                autoInsertIndex: window.__autoInsertIndex || 1,
+                autoLike: window.__autoLike === true,
               });
             }
             if (message.type === "record-comment") {

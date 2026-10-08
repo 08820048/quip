@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>Quip</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="mark">Quip</p>
+        <button type="button" id="open-options">完整设置</button>
+      </header>
+
+      <section class="card progress" aria-labelledby="progress-label">
+        <div class="progress-top">
+          <p id="progress-label">今日互动</p>
+          <p class="figure"><span id="used">0</span><span id="cap">/ 600</span></p>
+        </div>
+        <div class="track" id="bar" role="progressbar" aria-valuemin="0" aria-valuemax="600" aria-valuenow="0" aria-labelledby="progress-label">
+          <span id="fill"></span>
+        </div>
+        <p class="hint" id="progress-note">还剩 600 条。写入回复框成功才计数。</p>
+      </section>
+
+      <form class="card" id="quick">
+        <fieldset>
+          <legend>自动写入</legend>
+          <div class="segment">
+            <label><input type="radio" name="autoInsert" value="off" checked />关闭</label>
+            <label><input type="radio" name="autoInsert" value="position" />指定</label>
+            <label><input type="radio" name="autoInsert" value="random" />随机</label>
+          </div>
+        </fieldset>
+
+        <label class="field" id="index-field" hidden>
+          写入第几条
+          <select name="autoInsertIndex">
+            <option value="1">第 1 条</option>
+            <option value="2">第 2 条</option>
+            <option value="3">第 3 条</option>
+            <option value="4">第 4 条</option>
+            <option value="5">第 5 条</option>
+          </select>
+        </label>
+
+        <div class="split">
+          <fieldset>
+            <legend>评论后点赞</legend>
+            <div class="segment">
+              <label><input type="radio" name="autoLike" value="off" checked />关闭</label>
+              <label><input type="radio" name="autoLike" value="on" />开启</label>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend>写入方式</legend>
+            <div class="segment">
+              <label><input type="radio" name="insertMode" value="append" checked />追加</label>
+              <label><input type="radio" name="insertMode" value="overwrite" />覆盖</label>
+            </div>
+          </fieldset>
+        </div>
+
+        <div class="split">
+          <fieldset>
+            <legend>候选条数</legend>
+            <div class="segment">
+              <label><input type="radio" name="count" value="3" />3</label>
+              <label><input type="radio" name="count" value="4" checked />4</label>
+              <label><input type="radio" name="count" value="5" />5</label>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend>评论语言</legend>
+            <div class="segment">
+              <label><input type="radio" name="language" value="auto" checked />跟随</label>
+              <label><input type="radio" name="language" value="zh" />中文</label>
+              <label><input type="radio" name="language" value="en" />英文</label>
+            </div>
+          </fieldset>
+        </div>
+
+        <fieldset>
+          <legend>全自动</legend>
+          <div class="segment">
+            <label><input type="radio" name="autoRun" value="off" checked />关闭</label>
+            <label><input type="radio" name="autoRun" value="on" />开启</label>
+          </div>
+          <div class="split">
+            <label class="field">点赞停在
+              <input name="autoStopLikes" type="number" min="0" max="999" step="1" inputmode="numeric" value="20" />
+            </label>
+            <label class="field">评论停在
+              <input name="autoStopComments" type="number" min="0" max="999" step="1" inputmode="numeric" value="10" />
+            </label>
+          </div>
+        </fieldset>
+        <p class="hint">开启后当前页自己刷。间隔、点赞、评论、打开帖子和主页都会随机。评论会发送。两项都到上限后停下。</p>
+
+        <label class="field">
+          每日上限
+          <input name="dailyCap" type="number" min="0" max="9999" step="1" inputmode="numeric" value="600" />
+        </label>
+        <p class="status" id="save-status" role="status"></p>
+      </form>
+    </main>
+    <script src="shared.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

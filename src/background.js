@@ -2,16 +2,16 @@ importScripts("shared.js");
 
 const controllers = new Map();
 
-chrome.action.onClicked.addListener(() => {
-  chrome.runtime.openOptionsPage();
-});
-
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (sender?.id !== chrome.runtime.id) return false;
   if (message?.type === "open-options") {
     chrome.runtime.openOptionsPage();
     sendResponse({ ok: true });
     return false;
+  }
+  if (message?.type === "set-auto-run") {
+    setAutoRun(message.enabled === true).then(sendResponse);
+    return true;
   }
   if (message?.type === "get-public-settings") {
     enqueueUsage(publicSettings).then(sendResponse);
@@ -53,7 +53,26 @@ async function publicSettings() {
     used: usage.used,
     dailyCap: usage.dailyCap,
     blocked: usage.blocked,
+    autoInsert: settings.autoInsert,
+    autoInsertIndex: settings.autoInsertIndex,
+    autoLike: settings.autoLike,
+    autoRun: settings.autoRun,
+    autoStopLikes: settings.autoStopLikes,
+    autoStopComments: settings.autoStopComments,
+    autoRunToken: settings.autoRunToken,
   };
+}
+
+async function setAutoRun(enabled) {
+  const stored = await chrome.storage.local.get("settings");
+  const current = QuipShared.normalizeSettings(stored.settings);
+  const next = QuipShared.normalizeSettings({
+    ...current,
+    autoRun: enabled,
+    autoRunToken: enabled && !current.autoRun ? Date.now() : current.autoRunToken,
+  });
+  await chrome.storage.local.set({ settings: next });
+  return { ok: true, autoRun: next.autoRun, autoRunToken: next.autoRunToken };
 }
 
 async function recordComment() {
@@ -124,7 +143,7 @@ async function generate(message) {
     return {
       ok: true,
       comments,
-      styles: QuipShared.stylesFor(settings.count),
+      styles: QuipShared.commentStyles(settings),
       insertMode: settings.insertMode,
     };
   } catch (error) {

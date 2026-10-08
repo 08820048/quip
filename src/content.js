@@ -161,11 +161,26 @@ const ui = {
   comments: [],
   styles: [],
   insertMode: "append",
+  autoInsert: "off",
+  autoInsertIndex: 1,
+  autoLike: false,
+  inserting: false,
   usage: null,
   capHost: null,
 };
 
 const quota = { used: 0, dailyCap: 600, blocked: false };
+
+function rememberAutomation(settings) {
+  const normalized = QuipShared.normalizeSettings(settings);
+  ui.autoInsert = normalized.autoInsert;
+  ui.autoInsertIndex = normalized.autoInsertIndex;
+  ui.autoLike = normalized.autoLike;
+  ui.autoRun = normalized.autoRun;
+  ui.autoStopLikes = normalized.autoStopLikes;
+  ui.autoStopComments = normalized.autoStopComments;
+  ui.autoRunToken = normalized.autoRunToken;
+}
 
 function capText() {
   return QuipShared.capMessage(quota);
@@ -216,6 +231,9 @@ function stopQuip() {
   if (stopped) return;
   stopped = true;
   clearTimeout(scanTimer);
+  clearInterval(autoPoll);
+  stopAutoWaits();
+  try { ui.autoHost?.remove(); } catch { /* 页面节点可能已经不可用。 */ }
   try { pageObserver?.disconnect(); } catch { /* 扩展上下文已经失效。 */ }
   document.removeEventListener("pointerdown", onDocumentPointerDown, true);
   document.removeEventListener("keydown", onDocumentKeyDown);
@@ -261,11 +279,15 @@ async function refreshQuota() {
   }
   const settings = await sendToBackground({ type: "get-public-settings" });
   if (stopped || !settings) return;
+  rememberAutomation(settings);
   try {
     applyQuota(settings);
   } catch (error) {
     if (!extensionAlive() || invalidated(error)) stopQuip();
+    return;
   }
+  if (settings.autoRun) maybeStartAuto();
+  else if (autoLoopRunning) stopAutoWaits();
 }
 
 function onWindowFocus() {
@@ -375,6 +397,10 @@ function boot() {
   document.addEventListener("visibilitychange", onVisibilityChange);
   scheduleScan();
   refreshQuota().catch(() => stopQuip());
+  autoPoll = setInterval(() => {
+    if (!extensionAlive()) return;
+    refreshQuota().catch(() => stopQuip());
+  }, 2000);
 }
 
 let scanTimer = 0;
@@ -705,13 +731,17 @@ function showComments() {
     const insert = document.createElement("button");
     insert.type = "button";
     insert.className = "quip-insert";
-    const style = document.createElement("span");
-    style.className = "quip-style";
-    style.textContent = ui.styles[index] || "评论";
+    const styleName = ui.styles[index];
+    if (styleName) {
+      const style = document.createElement("span");
+      style.className = "quip-style";
+      style.textContent = styleName;
+      insert.append(style);
+    }
     const text = document.createElement("span");
     text.className = "quip-text";
     text.textContent = comment;
-    insert.append(style, text);
+    insert.append(text);
     insert.addEventListener("click", () => {
       chooseComment(comment).catch((error) => {
         if (!extensionAlive() || invalidated(error)) stopQuip();
@@ -791,9 +821,21 @@ async function onAiClick(article, anchor) {
   ui.styles = response.styles || [];
   ui.insertMode = response.insertMode || "append";
   showComments();
+  const picked = QuipShared.pickAutoComment(ui.comments, ui);
+  if (picked) await chooseComment(picked);
 }
 
 async function chooseComment(text) {
+  if (ui.inserting) return;
+  ui.inserting = true;
+  try {
+    await writeChosenComment(text);
+  } finally {
+    ui.inserting = false;
+  }
+}
+
+async function writeChosenComment(text) {
   const article = ui.article;
   if (!article?.isConnected) {
     showNote("这条帖子已经不在页面上。可以复制候选后手动粘贴。");
@@ -803,6 +845,7 @@ async function chooseComment(text) {
   const settings = await sendToBackground({ type: "get-public-settings" });
   if (stopped) return;
   if (settings) {
+    rememberAutomation(settings);
     try { applyQuota(settings); } catch (error) {
       if (!extensionAlive() || invalidated(error)) stopQuip();
       return;
@@ -825,6 +868,10 @@ async function chooseComment(text) {
   if (!insertIntoEditor(editor, text, mode)) {
     showNote("写入失败，回复框没有接受这段文字。可以复制候选后手动粘贴。");
     return;
+  }
+  if (ui.autoLike) {
+    likeTweet(article);
+    refreshLikeButtons();
   }
   const anchor = ui.anchor;
   closePanel();
@@ -948,6 +995,419 @@ function copyText(text) {
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const autoWaits = new Set();
+let autoLoopRunning = false;
+let autoPoll = 0;
+let autoSeen = new Set();
+let autoNote = "";
+
+function autoWait(ms) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      autoWaits.delete(finish);
+      resolve();
+    }, ms);
+    const finish = () => {
+      clearTimeout(timer);
+      autoWaits.delete(finish);
+      resolve();
+    };
+    autoWaits.add(finish);
+  });
+}
+
+function stopAutoWaits() {
+  for (const finish of [...autoWaits]) finish();
+}
+
+function haltAutoLocal() {
+  ui.autoRun = false;
+  const previous = ui.requestId;
+  ui.requestId += 1;
+  if (previous) sendToBackground({ type: "cancel", requestId: previous });
+  stopAutoWaits();
+  hideAutoHud();
+}
+
+function loadAutoProgress(token) {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem("quip-auto-progress") || "null");
+    if (saved && saved.token === token) {
+      return {
+        token,
+        likes: Math.max(0, Math.floor(Number(saved.likes) || 0)),
+        comments: Math.max(0, Math.floor(Number(saved.comments) || 0)),
+      };
+    }
+  } catch {
+    // 读不到进度时从 0 开始。
+  }
+  return { token, likes: 0, comments: 0 };
+}
+
+function saveAutoProgress(progress) {
+  try {
+    sessionStorage.setItem("quip-auto-progress", JSON.stringify(progress));
+  } catch {
+    // 这一轮仍用内存里的计数。
+  }
+}
+
+function maybeStartAuto() {
+  if (!ui.autoRun || stopped || autoLoopRunning) return;
+  autoLoopRunning = true;
+  runAutoLoop().finally(() => {
+    autoLoopRunning = false;
+  });
+}
+
+async function runAutoLoop() {
+  let progress = loadAutoProgress(ui.autoRunToken);
+  let closing = "";
+  while (!stopped && extensionAlive()) {
+    const settings = await sendToBackground({ type: "get-public-settings" });
+    if (stopped || !settings) break;
+    rememberAutomation(settings);
+    try {
+      applyQuota(settings);
+    } catch (error) {
+      if (!extensionAlive() || invalidated(error)) stopQuip();
+      break;
+    }
+    if (!ui.autoRun) break;
+    if (progress.token !== ui.autoRunToken) {
+      progress = { token: ui.autoRunToken, likes: 0, comments: 0 };
+      autoSeen = new Set();
+    }
+    if (QuipShared.autoRunFinished({ ...settings, likes: progress.likes, comments: progress.comments }, quota.blocked)) {
+      closing = quota.blocked && progress.comments < ui.autoStopComments ? "今日评论已到上限，已停下" : "已到上限，已停下";
+      renderAutoHud(progress, closing);
+      await sendToBackground({ type: "set-auto-run", enabled: false });
+      ui.autoRun = false;
+      await autoWait(1800);
+      break;
+    }
+    renderAutoHud(progress, "");
+    if (autoSkipsPage()) {
+      await autoWait(4000);
+      continue;
+    }
+    let action = QuipShared.pickAutoAction({
+      ...settings,
+      likes: progress.likes,
+      comments: progress.comments,
+      commentBlocked: quota.blocked,
+    }, Math.random);
+    if (ui.open || ui.inserting) action = "pause";
+    await autoWait(QuipShared.autoWaitMs(action, Math.random));
+    if (stopped || !extensionAlive() || !ui.autoRun) break;
+    let outcome = "";
+    try {
+      outcome = await performAutoAction(action);
+    } catch (error) {
+      if (!extensionAlive() || invalidated(error)) {
+        stopQuip();
+        break;
+      }
+    }
+    if (outcome === "halt") {
+      closing = autoNote || "已停下";
+      renderAutoHud(progress, closing);
+      await sendToBackground({ type: "set-auto-run", enabled: false });
+      ui.autoRun = false;
+      await autoWait(1800);
+      break;
+    }
+    if (outcome === "like") progress.likes += 1;
+    if (outcome === "comment") progress.comments += 1;
+    saveAutoProgress(progress);
+  }
+  if (!closing) hideAutoHud();
+  else await autoWait(200);
+  hideAutoHud();
+}
+
+async function performAutoAction(action) {
+  if (action === "pause") return "";
+  if (action === "scroll") {
+    autoScroll();
+    return "";
+  }
+  if (action === "like") return (await autoLikeOne()) ? "like" : "";
+  if (action === "comment") return autoCommentOne();
+  if (action === "detail" || action === "profile") {
+    await autoVisit(action);
+    return "";
+  }
+  return "";
+}
+
+function autoSkipsPage() {
+  return /^\/(messages|settings|compose|account|i\/)/.test(location.pathname);
+}
+
+function autoScroll() {
+  const direction = Math.random() < 0.18 ? -1 : 1;
+  const distance = (280 + Math.floor(Math.random() * 720)) * direction;
+  window.scrollBy({ top: distance, behavior: "smooth" });
+}
+
+function visibleTweets() {
+  return [...document.querySelectorAll(QUIP_SELECTORS.tweet)].filter((article) => {
+    if (article.parentElement?.closest(QUIP_SELECTORS.tweet)) return false;
+    const rect = article.getBoundingClientRect();
+    return rect.bottom > 80 && rect.top < window.innerHeight - 40 && rect.height > 40;
+  });
+}
+
+function pickTweet(filter) {
+  const list = visibleTweets().filter(filter);
+  if (!list.length) return null;
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+function statusLink(article) {
+  return ownElements(article, 'a[href*="/status/"]').find((anchor) => /\/status\/\d+/.test(anchor.getAttribute("href") || "")) || null;
+}
+
+function profileLink(article) {
+  const block = ownElements(article, QUIP_SELECTORS.userName)[0];
+  if (!block) return null;
+  return [...block.querySelectorAll("a[href]")].find((anchor) => /^\/[^/]+$/.test(anchor.getAttribute("href") || "")) || null;
+}
+
+function tweetKey(article) {
+  const href = statusLink(article)?.getAttribute("href") || "";
+  const match = href.match(/\/status\/(\d+)/);
+  if (match) return match[1];
+  return extractPost(article).text.slice(0, 80);
+}
+
+async function autoLikeOne() {
+  const article = pickTweet((node) => !isLiked(node) && ownControl(node, QUIP_SELECTORS.likeButton));
+  if (!article) {
+    autoScroll();
+    return false;
+  }
+  article.scrollIntoView({ block: "center", behavior: "smooth" });
+  await autoWait(350 + Math.floor(Math.random() * 900));
+  if (stopped || !ui.autoRun || isLiked(article)) return false;
+  likeTweet(article);
+  await autoWait(400);
+  refreshLikeButtons();
+  return isLiked(article);
+}
+
+async function autoVisit(kind) {
+  const article = pickTweet((node) => (kind === "detail" ? statusLink(node) : profileLink(node)));
+  if (!article) {
+    autoScroll();
+    return;
+  }
+  const link = kind === "detail" ? statusLink(article) : profileLink(article);
+  if (!link) return;
+  article.scrollIntoView({ block: "center", behavior: "smooth" });
+  await autoWait(400 + Math.floor(Math.random() * 800));
+  if (stopped || !ui.autoRun) return;
+  const before = location.href;
+  link.click();
+  await autoWait(4000 + Math.floor(Math.random() * 8000));
+  if (stopped || !ui.autoRun) return;
+  if (location.href !== before) history.back();
+  await autoWait(1000 + Math.floor(Math.random() * 1500));
+}
+
+function chooseAutoText(comments) {
+  const picked = QuipShared.pickAutoComment(comments, ui);
+  if (picked) return picked;
+  const list = (comments || []).map((item) => String(item || "").trim()).filter(Boolean);
+  if (!list.length) return "";
+  return list[Math.floor(Math.random() * list.length)];
+}
+
+async function autoCommentOne() {
+  if (quota.blocked || ui.inserting || ui.open) return "";
+  const article = pickTweet((node) => extractPost(node).text && !autoSeen.has(tweetKey(node)));
+  if (!article) {
+    autoScroll();
+    return "";
+  }
+  const post = extractPost(article);
+  const key = tweetKey(article);
+  article.scrollIntoView({ block: "center", behavior: "smooth" });
+  await autoWait(500 + Math.floor(Math.random() * 900));
+  if (stopped || !ui.autoRun || ui.open) return "";
+  const requestId = (() => {
+    ui.requestId += 1;
+    return ui.requestId;
+  })();
+  const response = await sendToBackground({ type: "generate", requestId, post });
+  if (stopped || !ui.autoRun || requestId !== ui.requestId) return "";
+  if (!response?.ok) {
+    if (response?.code === "NO_KEY" || response?.code === "CAP") {
+      autoNote = response.message || "已停下";
+      return "halt";
+    }
+    return "";
+  }
+  const text = chooseAutoText(response.comments || []);
+  if (!text) return "";
+  autoSeen.add(key);
+  ui.inserting = true;
+  try {
+    const editor = await ensureComposer(article);
+    if (!editor || stopped || !ui.autoRun) return "";
+    await autoWait(700 + Math.floor(Math.random() * 1200));
+    if (!insertIntoEditor(editor, text, response.insertMode || "append")) {
+      closeComposer(editor);
+      return "";
+    }
+    await autoWait(600 + Math.floor(Math.random() * 1400));
+    if (stopped || !ui.autoRun) {
+      closeComposer(editor);
+      return "";
+    }
+    if (!clickSend(editor)) {
+      closeComposer(editor);
+      return "";
+    }
+    const sent = await waitUntilSent(editor, text);
+    if (!sent) {
+      closeComposer(editor);
+      return "";
+    }
+    const recorded = await sendToBackground({ type: "record-comment" });
+    if (recorded) {
+      try { applyQuota(recorded); } catch (error) {
+        if (!extensionAlive() || invalidated(error)) stopQuip();
+      }
+    }
+    return "comment";
+  } finally {
+    ui.inserting = false;
+  }
+}
+
+function composerRoot(editor) {
+  return editor.closest('[role="dialog"]') || editor.closest(QUIP_SELECTORS.cell) || editor.parentElement;
+}
+
+function clickSend(editor) {
+  const button = composerRoot(editor)?.querySelector(QUIP_SELECTORS.sendButton);
+  if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") return false;
+  button.click();
+  return true;
+}
+
+async function waitUntilSent(editor, text) {
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    if (!editor.isConnected) return true;
+    if (!readEditorText(editor).includes(text)) return true;
+    await autoWait(200);
+    if (stopped || !ui.autoRun) return false;
+  }
+  return false;
+}
+
+function closeComposer(editor) {
+  const root = composerRoot(editor);
+  const close = root?.querySelector('[data-testid="app-bar-close"]');
+  if (close) {
+    close.click();
+    return;
+  }
+  root?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+}
+
+function renderAutoHud(progress, note) {
+  const host = ensureAutoHud();
+  host.dataset.theme = pageIsDark() ? "dark" : "light";
+  host.hidden = false;
+  const likes = host.shadowRoot.querySelector("[data-auto-likes]");
+  const comments = host.shadowRoot.querySelector("[data-auto-comments]");
+  const status = host.shadowRoot.querySelector("[data-auto-note]");
+  likes.textContent = `赞 ${progress.likes}/${ui.autoStopLikes}`;
+  comments.textContent = `评论 ${progress.comments}/${ui.autoStopComments}`;
+  status.textContent = note || "正在刷时间线";
+}
+
+function hideAutoHud() {
+  if (!ui.autoHost) return;
+  ui.autoHost.hidden = true;
+}
+
+function ensureAutoHud() {
+  if (ui.autoHost) return ui.autoHost;
+  const host = document.createElement("div");
+  host.id = "quip-auto-host";
+  host.hidden = true;
+  host.style.cssText = "position:fixed;z-index:2147483000;right:16px;bottom:16px;width:max-content;max-width:calc(100vw - 32px);";
+  const shadow = host.attachShadow({ mode: "open" });
+  const style = document.createElement("style");
+  style.textContent = `
+    :host { color-scheme: light; }
+    .bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 40px;
+      padding: 8px 8px 8px 14px;
+      border-radius: 18px;
+      background: #fffdf8;
+      color: #1c1915;
+      font: 13px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      -webkit-font-smoothing: antialiased;
+      box-shadow: 0 0 0 1px rgba(28, 25, 21, 0.08), 0 12px 32px rgba(28, 25, 21, 0.16);
+    }
+    strong { font-weight: 600; }
+    span { font-variant-numeric: tabular-nums; font-weight: 600; }
+    em { font-style: normal; color: #5c564c; }
+    button {
+      min-height: 40px;
+      padding: 0 14px;
+      border: 0;
+      border-radius: 999px;
+      background: #1c1915;
+      color: #fffdf8;
+      font: 600 13px/1 inherit;
+      cursor: pointer;
+    }
+    button:active { transform: scale(0.96); }
+    :host([data-theme="dark"]) .bar {
+      background: #15202b;
+      color: #e7e9ea;
+      box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 12px 32px rgba(0, 0, 0, 0.45);
+    }
+    :host([data-theme="dark"]) em { color: #8b98a5; }
+    :host([data-theme="dark"]) button { background: #e7e9ea; color: #15202b; }
+    @media (prefers-reduced-motion: reduce) { button:active { transform: none; } }
+  `;
+  const bar = document.createElement("div");
+  bar.className = "bar";
+  bar.setAttribute("role", "status");
+  const title = document.createElement("strong");
+  title.textContent = "全自动";
+  const likes = document.createElement("span");
+  likes.dataset.autoLikes = "true";
+  const comments = document.createElement("span");
+  comments.dataset.autoComments = "true";
+  const note = document.createElement("em");
+  note.dataset.autoNote = "true";
+  const stop = document.createElement("button");
+  stop.type = "button";
+  stop.textContent = "停止";
+  stop.addEventListener("click", () => {
+    haltAutoLocal();
+    sendToBackground({ type: "set-auto-run", enabled: false });
+  });
+  bar.append(title, likes, comments, note, stop);
+  shadow.append(style, bar);
+  document.body.append(host);
+  ui.autoHost = host;
+  return host;
 }
 
 function onDocumentPointerDown(event) {

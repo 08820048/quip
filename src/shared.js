@@ -8,6 +8,13 @@ const QuipShared = (() => {
     count: 4,
     insertMode: "append",
     dailyCap: 600,
+    autoInsert: "off",
+    autoInsertIndex: 1,
+    autoLike: false,
+    autoRun: false,
+    autoStopLikes: 20,
+    autoStopComments: 10,
+    autoRunToken: 0,
   };
 
   const DEFAULT_MODELS = {
@@ -39,6 +46,9 @@ const QuipShared = (() => {
       ? input.language
       : DEFAULTS.language;
     const insertMode = input.insertMode === "overwrite" ? "overwrite" : "append";
+    const autoInsert = input.autoInsert === "position" || input.autoInsert === "random" ? input.autoInsert : "off";
+    const indexNumber = Number(input.autoInsertIndex);
+    const autoInsertIndex = Number.isInteger(indexNumber) && indexNumber >= 1 && indexNumber <= 5 ? indexNumber : DEFAULTS.autoInsertIndex;
     return {
       provider,
       apiKey: String(input.apiKey || "").trim(),
@@ -48,7 +58,92 @@ const QuipShared = (() => {
       count,
       insertMode,
       dailyCap: normalizeDailyCap(input.dailyCap),
+      autoInsert,
+      autoInsertIndex,
+      autoLike: input.autoLike === true || input.autoLike === "on" || input.autoLike === "true",
+      autoRun: input.autoRun === true || input.autoRun === "on" || input.autoRun === "true",
+      autoStopLikes: normalizeStopCount(input.autoStopLikes, DEFAULTS.autoStopLikes),
+      autoStopComments: normalizeStopCount(input.autoStopComments, DEFAULTS.autoStopComments),
+      autoRunToken: normalizeToken(input.autoRunToken),
     };
+  }
+
+  function normalizeStopCount(value, fallback) {
+    if (value === "" || value === null || value === undefined) return fallback;
+    const number = typeof value === "number" ? value : Number(String(value).trim());
+    if (!Number.isInteger(number) || number < 0 || number > 999) return fallback;
+    return number;
+  }
+
+  function normalizeToken(value) {
+    const number = Number(value);
+    if (!Number.isInteger(number) || number <= 0 || number > 1e15) return 0;
+    return number;
+  }
+
+  function autoRunFinished(input, commentBlocked) {
+    const settings = normalizeSettings(input);
+    const likes = Math.max(0, Math.floor(Number(input?.likes) || 0));
+    const comments = Math.max(0, Math.floor(Number(input?.comments) || 0));
+    const likeDone = settings.autoStopLikes <= 0 || likes >= settings.autoStopLikes;
+    const commentDone = settings.autoStopComments <= 0 || comments >= settings.autoStopComments || commentBlocked === true;
+    return likeDone && commentDone;
+  }
+
+  function pickAutoAction(input, random = Math.random) {
+    const settings = normalizeSettings(input);
+    const likes = Math.max(0, Math.floor(Number(input?.likes) || 0));
+    const comments = Math.max(0, Math.floor(Number(input?.comments) || 0));
+    const likeOpen = settings.autoStopLikes > 0 && likes < settings.autoStopLikes;
+    const commentOpen = settings.autoStopComments > 0 && comments < settings.autoStopComments && input?.commentBlocked !== true;
+    const weights = [
+      ["scroll", 34],
+      ["pause", 12],
+      ["like", likeOpen ? 22 : 0],
+      ["comment", commentOpen ? 18 : 0],
+      ["detail", 8],
+      ["profile", 6],
+    ];
+    const total = weights.reduce((sum, item) => sum + item[1], 0);
+    let roll = Number(random());
+    if (!Number.isFinite(roll)) roll = 0;
+    roll = Math.min(0.999999, Math.max(0, roll)) * total;
+    for (const [name, weight] of weights) {
+      roll -= weight;
+      if (roll < 0) return name;
+    }
+    return "scroll";
+  }
+
+  function autoWaitMs(action, random = Math.random) {
+    const roll = () => {
+      const value = Number(random());
+      return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+    };
+    const bands = {
+      pause: [8000, 20000],
+      scroll: [1200, 4200],
+      like: [2200, 8000],
+      comment: [3000, 11000],
+      detail: [2000, 7000],
+      profile: [2500, 8000],
+    };
+    const band = bands[action] || [2000, 6000];
+    const waitMs = band[0] + Math.floor(roll() * (band[1] - band[0]));
+    if (roll() < 0.14) return waitMs + 15000 + Math.floor(roll() * 20000);
+    return waitMs;
+  }
+
+  function pickAutoComment(comments, settingsInput, random = Math.random) {
+    const settings = normalizeSettings(settingsInput);
+    const list = Array.isArray(comments) ? comments.filter((item) => String(item || "").trim()) : [];
+    if (!list.length || settings.autoInsert === "off") return null;
+    if (settings.autoInsert === "random") {
+      const roll = Number(random());
+      const index = Number.isFinite(roll) ? Math.floor(roll * list.length) : 0;
+      return list[Math.min(list.length - 1, Math.max(0, index))];
+    }
+    return list[Math.min(list.length, settings.autoInsertIndex) - 1];
   }
 
   function normalizeDailyCap(value) {
@@ -110,6 +205,12 @@ const QuipShared = (() => {
     return STYLE_NAMES.slice(0, count);
   }
 
+  function commentStyles(settingsInput) {
+    const settings = normalizeSettings(settingsInput);
+    if (settings.persona) return [];
+    return stylesFor(settings.count);
+  }
+
   function capComment(value) {
     const chars = Array.from(String(value || "").trim());
     if (chars.length <= COMMENT_LIMIT) return chars.join("");
@@ -122,19 +223,32 @@ const QuipShared = (() => {
     const quoted = truncateText(post?.quotedText || "");
     const language = resolveLanguage(settings.language, clipped.text);
     const styles = stylesFor(settings.count);
-    const lines = [
-      "你是 X 回复助手。根据帖子写可以直接发送的评论候选。",
-      `只输出一个 JSON 字符串数组，长度正好是 ${settings.count}。不要使用 markdown，不要解释。`,
-      `数组顺序对应这些风格：${styles.join("、")}。`,
-      settings.count === 5 ? "第 5 条仍是短评，但换一个角度。" : "",
-      "每条不超过 80 个字。",
-      language === "zh" ? "使用中文。" : "Use English.",
-      "不要堆砌话题标签。可以称呼账号，但不要假装认识作者，不要暗示你们以前交流过。",
-      "不要编造帖子里没有的事实。如果帖子带图片、视频或链接，不要假装看过媒体内容。",
-      settings.persona ? `人设补充：${settings.persona}` : "",
-    ].filter(Boolean);
+    const persona = settings.persona;
+    const lines = persona
+      ? [
+          "你是 X 回复助手。用户给出的人设是唯一的写作依据。写什么、从哪个角度写、用什么口吻，都只按人设。",
+          `人设：${persona}`,
+          "根据帖子写可以直接发送的评论候选。",
+          `只输出一个 JSON 字符串数组，长度正好是 ${settings.count}。不要使用 markdown，不要解释。`,
+          `写 ${settings.count} 条彼此不同的评论，差别由人设决定。`,
+          "每条不超过 80 个字。",
+          language === "zh" ? "使用中文。" : "Use English.",
+          "不要堆砌话题标签。可以称呼账号，但不要假装认识作者，不要暗示你们以前交流过。",
+          "不要编造帖子里没有的事实。如果帖子带图片、视频或链接，不要假装看过媒体内容。",
+        ]
+      : [
+          "你是 X 回复助手。根据帖子写可以直接发送的评论候选。",
+          `只输出一个 JSON 字符串数组，长度正好是 ${settings.count}。不要使用 markdown，不要解释。`,
+          `数组顺序对应这些风格：${styles.join("、")}。`,
+          settings.count === 5 ? "第 5 条仍是短评，但换一个角度。" : "",
+          "每条不超过 80 个字。",
+          language === "zh" ? "使用中文。" : "Use English.",
+          "不要堆砌话题标签。可以称呼账号，但不要假装认识作者，不要暗示你们以前交流过。",
+          "不要编造帖子里没有的事实。如果帖子带图片、视频或链接，不要假装看过媒体内容。",
+        ].filter(Boolean);
 
     const user = [
+      persona ? `按这段人设写 ${settings.count} 条不同的回复：${persona}` : "",
       post?.authorName ? `作者：${post.authorName}` : "",
       post?.handle ? `账号：${post.handle}` : "",
       `正文：${clipped.text}`,
@@ -282,6 +396,10 @@ const QuipShared = (() => {
     COMMENT_LIMIT,
     DAILY_CAP_MAX,
     normalizeSettings,
+    pickAutoComment,
+    autoRunFinished,
+    pickAutoAction,
+    autoWaitMs,
     normalizeDailyCap,
     localDateKey,
     usageSnapshot,
@@ -291,6 +409,7 @@ const QuipShared = (() => {
     detectLanguage,
     resolveLanguage,
     stylesFor,
+    commentStyles,
     capComment,
     buildPrompt,
     parseComments,

@@ -42,8 +42,9 @@
 
         <label>
           人设补充
-          <textarea name="persona" rows="4" maxlength="800" placeholder="可选。例如：语气随意，少用感叹号。"></textarea>
+          <textarea name="persona" rows="4" maxlength="800" placeholder="可选。例如：语气随意，少用感叹号，像朋友随口回一句。"></textarea>
         </label>
+        <p class="hint">填写后，评论只按这段写，不再套用认同、补充、轻提问、短评。留空才按这四类生成。</p>
 
         <fieldset>
           <legend>评论语言</legend>
@@ -66,6 +67,48 @@
           <label class="choice"><input type="radio" name="insertMode" value="append" checked /> 追加到回复框末尾</label>
           <label class="choice"><input type="radio" name="insertMode" value="overwrite" /> 覆盖回复框</label>
         </fieldset>
+
+        <fieldset>
+          <legend>自动写入</legend>
+          <label class="choice"><input type="radio" name="autoInsert" value="off" checked /> 关闭，仍由我点选</label>
+          <label class="choice"><input type="radio" name="autoInsert" value="position" /> 指定第几条</label>
+          <label class="choice"><input type="radio" name="autoInsert" value="random" /> 随机一条</label>
+        </fieldset>
+        <label id="auto-insert-index-label" hidden>
+          写入第几条
+          <select name="autoInsertIndex">
+            <option value="1">第 1 条</option>
+            <option value="2">第 2 条</option>
+            <option value="3">第 3 条</option>
+            <option value="4">第 4 条</option>
+            <option value="5">第 5 条</option>
+          </select>
+        </label>
+        <p class="hint">没填人设时，第 1 条是「认同」，后面依次是补充、轻提问、短评。填了人设后，第几条就是按人设写出的第几条。指定的位置超过本次条数时，写入最后一条。手动点选或自动写入时，发送仍由你自己点。</p>
+
+        <fieldset>
+          <legend>全自动</legend>
+          <label class="choice"><input type="radio" name="autoRun" value="off" checked /> 关闭</label>
+          <label class="choice"><input type="radio" name="autoRun" value="on" /> 开启，当前页面自己刷</label>
+        </fieldset>
+        <div class="row">
+          <label>
+            点赞停在
+            <input name="autoStopLikes" type="number" min="0" max="999" step="1" inputmode="numeric" value="20" />
+          </label>
+          <label>
+            评论停在
+            <input name="autoStopComments" type="number" min="0" max="999" step="1" inputmode="numeric" value="10" />
+          </label>
+        </div>
+        <p class="hint">开启后，时间线会自己往下刷。间隔、只点赞、只评论、点开帖子、点开主页都会随机穿插，不会按固定顺序点完一条再点下一条。评论会写入并发送。两项都到达上限后停下。填 0 表示不做这一项。每日上限仍然有效。</p>
+
+        <fieldset>
+          <legend>评论后点赞</legend>
+          <label class="choice"><input type="radio" name="autoLike" value="off" checked /> 不自动点赞</label>
+          <label class="choice"><input type="radio" name="autoLike" value="on" /> 写入成功后自动点赞</label>
+        </fieldset>
+        <p class="hint">已经赞过的帖子不会再点一次。只点选候选、没有写进回复框时不会点赞。</p>
 
         <div class="usage">
           <p class="usage-label">今日已写入</p>

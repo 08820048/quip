@@ -60,18 +60,20 @@ timeline.append(
   tweet({ id: "tweet-silent", name: "Dio", handle: "dio", text: "回复框不会出现。" }),
 );
 
-document.querySelectorAll('[data-testid="reply"]').forEach((button) => {
+function watchReply(button) {
   button.addEventListener("click", () => {
     button.dataset.clicks = String(Number(button.dataset.clicks || 0) + 1);
     if (button.hasAttribute("data-opens-dialog")) document.querySelector("#composer-slot").hidden = false;
   });
-});
-document.querySelectorAll('[data-testid="like"], [data-testid="unlike"]').forEach((button) => {
+}
+function watchLike(button) {
   button.addEventListener("click", () => {
     button.dataset.clicks = String(Number(button.dataset.clicks || 0) + 1);
     if (button.dataset.testid === "like") button.dataset.testid = "unlike";
   });
-});
+}
+document.querySelectorAll('[data-testid="reply"]').forEach(watchReply);
+document.querySelectorAll('[data-testid="like"], [data-testid="unlike"]').forEach(watchLike);
 document.querySelector("#send").addEventListener("click", () => {
   document.querySelector("#send").dataset.clicks = String(Number(document.querySelector("#send").dataset.clicks || 0) + 1);
 });
@@ -192,13 +194,52 @@ async function run() {
   await waitFor(() => generateCount() >= beforeRepeat + 2, "重复点击重新请求");
 
   if (window.__used !== 2) throw new Error(`写入计数错误 ${window.__used}`);
+
+  window.__autoInsert = "position";
+  window.__autoInsertIndex = 2;
+  window.__autoLike = true;
+  timeline.append(tweet({
+    id: "tweet-auto",
+    name: "Finn",
+    handle: "finn",
+    text: "自动写入这一条。",
+    extra: '<div data-testid="tweetTextarea_0" id="auto-box" contenteditable="true"></div>',
+  }));
+  watchLike(document.querySelector("#tweet-auto [data-testid='like']"));
+  await waitFor(() => document.querySelector("#tweet-auto [data-quip-ai]"), "自动写入入口");
+  const sendsBeforeAuto = Number(document.querySelector("#send").dataset.clicks || 0);
+  document.querySelector("#tweet-auto [data-quip-ai]").click();
+  await waitFor(() => document.querySelector("#auto-box").innerText.includes("补一个例子"), "自动写入第 2 条");
+  await waitFor(() => document.querySelector("#tweet-auto [data-testid='unlike']")?.dataset.clicks === "1", "评论后自动点赞");
+  if (document.querySelector("#quip-panel-host").style.display !== "none") throw new Error("自动写入后浮层还在");
+  if (Number(document.querySelector("#send").dataset.clicks || 0) !== sendsBeforeAuto) throw new Error("自动写入时点击了发送");
+
+  window.__autoInsert = "random";
+  window.__autoLike = true;
+  timeline.append(tweet({
+    id: "tweet-random",
+    name: "Gia",
+    handle: "gia",
+    text: "随机写入这一条。",
+    extra: '<div data-testid="tweetTextarea_0" id="random-box" contenteditable="true"></div>',
+    liked: true,
+  }));
+  const randomLike = document.querySelector("#tweet-random [data-testid='unlike']");
+  watchLike(randomLike);
+  await waitFor(() => document.querySelector("#tweet-random [data-quip-ai]"), "随机写入入口");
+  document.querySelector("#tweet-random [data-quip-ai]").click();
+  await waitFor(() => ["认同这条", "补一个例子", "你怎么看？", "不错"].some((comment) => document.querySelector("#random-box").innerText.includes(comment)), "随机写入一条");
+  if (Number(randomLike.dataset.clicks || 0) !== 0) throw new Error("已赞帖子被自动点赞再次点击");
+
+  window.__autoInsert = "off";
+  window.__autoLike = false;
   window.__dailyCap = window.__used;
   const generatesAtCap = generateCount();
   const likeClicks = Number(document.querySelector("#tweet-a [data-testid='unlike']").dataset.clicks || 0);
   document.querySelector("#tweet-a [data-quip-ai]").click();
   await waitFor(() => {
     const notice = document.querySelector("#quip-cap-notice");
-    return notice && !notice.hidden && notice.shadowRoot?.textContent.includes("达到 2 条上限");
+    return notice && !notice.hidden && notice.shadowRoot?.textContent.includes(`达到 ${window.__dailyCap} 条上限`);
   }, "上限提示");
   if (document.querySelector("#tweet-a [data-quip-ai]").disabled !== true) throw new Error("达到上限后 Quip 按钮仍可点");
   if (document.querySelector("#tweet-a [data-quip-like]").disabled !== true) throw new Error("达到上限后点赞图标仍可点");
